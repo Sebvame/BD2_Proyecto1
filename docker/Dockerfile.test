@@ -1,0 +1,24 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Instalar herramientas necesarias
+RUN apk add --no-cache curl wget jq
+
+# Copiar archivos de prueba
+COPY api/src/tests/integration ./integration-tests/api
+COPY search-service/src/tests/integration ./integration-tests/search
+COPY package*.json ./
+
+# Instalar dependencias
+RUN npm ci
+
+# Copiar script de ejecución de pruebas
+COPY scripts/run-tests.sh ./
+RUN chmod +x ./run-tests.sh
+
+# Crear directorio para resultados
+RUN mkdir -p test-results
+
+# Entrypoint para ejecutar pruebas
+ENTRYPOINT ["./run-tests.sh"]
