@@ -7,7 +7,7 @@ import { logger } from './src/utils/logger';
 import { initializeElasticsearch } from './src/services/elasticsearch';
 
 // Importar rutas
-import searchRoutes from './controllers/searchController';
+import searchRoutes from './src/controllers/searchController';
 
 // Inicializar express
 const app = express();
