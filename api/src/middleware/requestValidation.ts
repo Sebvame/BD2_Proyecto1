@@ -17,7 +17,7 @@ export const validateRequest = (req: Request, res: Response, next: NextFunction)
   
   if (!errors.isEmpty()) {
     const formattedErrors: ValidationError[] = errors.array().map((error: ExpressValidationError) => ({
-      field: 'field' in error ? error.field : 'unknown',
+      field: 'field' in error ? (error.field as string) : 'unknown',
       message: error.msg,
       value: 'value' in error ? error.value : undefined,
       location: 'location' in error ? error.location : undefined,

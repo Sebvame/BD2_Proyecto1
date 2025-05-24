@@ -1,11 +1,14 @@
+// En auth-service/index.ts - uso correcto de Morgan
+
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { config } from './src/config';
-import { logger, stream } from './src/utils/logger';
+import { logger } from './src/utils/logger';
 import { SecurityService } from './src/services/securityService';
+import { authMiddleware, securityHeaders, checkBlockedIPs } from './src/middleware/authMiddleware';
 
 // Importar rutas
 import authRoutes from './src/controllers/authController';
@@ -86,78 +89,25 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Request logging
-app.use(morgan('combined', { stream }));
+// CORRECCIÓN: Morgan con stream correcto
+app.use(morgan('combined', { 
+  stream: {
+    write: (message: string) => {
+      logger.info(message.trim());
+    }
+  }
+}) as express.RequestHandler);
 
-// Rate limiting
+// Rate limiting global
 app.use(globalLimiter);
 
-// Request ID middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
-  req.headers['x-request-id'] = req.headers['x-request-id'] || securityService.generateSecureToken(16);
-  res.setHeader('X-Request-ID', req.headers['x-request-id']);
-  next();
-});
+// Headers de seguridad
+app.use(securityHeaders);
 
-// Security headers middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-  next();
-});
+// Verificar IPs bloqueadas
+app.use(checkBlockedIPs);
 
-// IP blocking middleware
-app.use(async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
-    
-    if (await securityService.isIPBlocked(clientIP)) {
-      logger.warn(`Blocked request from IP: ${clientIP}`);
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'IP_BLOCKED',
-          message: 'Access denied'
-        },
-        meta: {
-          timestamp: new Date().toISOString()
-        }
-      });
-    }
-    
-    next();
-  } catch (error) {
-    logger.error('Error checking IP block status:', error);
-    next();
-  }
-});
-
-// Request validation middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
-  // Validar que el Content-Type sea correcto para POST/PUT
-  if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
-    const contentType = req.headers['content-type'];
-    if (!contentType || !contentType.includes('application/json')) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_CONTENT_TYPE',
-          message: 'Content-Type must be application/json'
-        },
-        meta: {
-          timestamp: new Date().toISOString()
-        }
-      });
-    }
-  }
-  
-  next();
-});
-
-// Routes
+// Rutas
 app.use('/auth', authRoutes);
 
 // Root health check

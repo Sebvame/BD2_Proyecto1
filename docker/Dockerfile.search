@@ -1,0 +1,68 @@
+# Multi-stage build for Search service
+FROM node:18-alpine AS base
+
+# Instalar dependencias del sistema
+RUN apk add --no-cache \
+    dumb-init \
+    curl \
+    && rm -rf /var/cache/apk/*
+
+# Crear usuario no-root
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S searchservice -u 1001
+
+# Establecer directorio de trabajo
+WORKDIR /app
+
+# Copiar archivos de configuración
+COPY search-service/package*.json ./
+COPY search-service/tsconfig.json ./
+
+# Stage de dependencias
+FROM base AS deps
+
+# Instalar todas las dependencias
+RUN npm ci
+
+# Stage de build
+FROM base AS build
+
+# Copiar dependencias
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copiar código fuente
+COPY search-service/src ./src
+COPY search-service/index.ts ./
+
+# Compilar TypeScript
+RUN npm run build
+
+# Limpiar dependencias de desarrollo
+RUN npm prune --production
+
+# Stage de producción
+FROM base AS runtime
+
+# Copiar solo dependencias de producción
+COPY --from=build /app/node_modules ./node_modules
+
+# Copiar código compilado
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/package.json ./
+
+# Crear directorio para logs
+RUN mkdir -p /app/logs && chown -R searchservice:nodejs /app
+
+# Cambiar a usuario no-root
+USER searchservice
+
+# Exponer puerto
+EXPOSE 3001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3001/health || exit 1
+
+# Comando de inicio
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "dist/index.js"]

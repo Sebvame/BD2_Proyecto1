@@ -5,6 +5,7 @@ import app from '../../index'; // Asegúrate de que la ruta sea correcta
 import { config } from '../../config';
 import { connectToMongoDB, closeConnections } from '../../utils/db';
 import { UserModel } from '../../repositories/mongodb/schemas';
+import { Request, Response, NextFunction } from 'express';
 
 describe('API Integration Tests', () => {
   // Token de prueba para Auth0 (mock)
@@ -42,35 +43,50 @@ describe('API Integration Tests', () => {
   // Mock de los middlewares de autenticación para pruebas
   // En un entorno real, estos serían verificados con Auth0
   vi.mock('../../middleware/auth', () => {
-    return {
-      checkJwt: (req?, res, next) => {
-        const authHeader = req.headers.authorization;
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-          const token = authHeader.split(' ')[1];
-          if (token === mockToken) {
-            req.auth = {
-              sub: 'auth0|60d21b4667d0d8992e610c85',
-              'https://restaurant-api.com/roles': ['customer'],
-            };
-            return next();
-          }
+    interface AuthRequest extends Request {
+      auth?: {
+      sub: string;
+      'https://restaurant-api.com/roles': string[];
+      };
+    }
+
+    interface Middleware {
+      checkJwt: (req?: AuthRequest, res?: Response, next?: NextFunction) => void;
+      checkRole: (role: string) => (req: AuthRequest, res: Response, next: NextFunction) => void;
+      handleAuthError: (err: Error, req: Request, res: Response, next: NextFunction) => void;
+    }
+
+    const middleware: Middleware = {
+      checkJwt: (req?: AuthRequest, res?: Response, next?: NextFunction) => {
+      const authHeader = req?.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.split(' ')[1];
+        if (token === mockToken) {
+        req.auth = {
+          sub: 'auth0|60d21b4667d0d8992e610c85',
+          'https://restaurant-api.com/roles': ['customer'],
+        };
+        return next?.();
         }
-        return res.status(401).json({ error: { message: 'Unauthorized' } });
+      }
+      return res?.status(401).json({ error: { message: 'Unauthorized' } });
       },
-      checkRole: (role) => (req, res, next) => {
-        const userRoles = req.auth?.['https://restaurant-api.com/roles'] || [];
-        if (userRoles.includes(role)) {
-          return next();
-        }
-        return res.status(403).json({ error: { message: 'Insufficient permissions' } });
+      checkRole: (role: string) => (req: AuthRequest, res: Response, next: NextFunction) => {
+      const userRoles = req.auth?.['https://restaurant-api.com/roles'] || [];
+      if (userRoles.includes(role)) {
+        return next();
+      }
+      return res.status(403).json({ error: { message: 'Insufficient permissions' } });
       },
-      handleAuthError: (err, req, res, next) => {
-        if (err.name === 'UnauthorizedError') {
-          return res.status(401).json({ error: { message: 'Invalid token' } });
-        }
-        next(err);
+      handleAuthError: (err: Error, req: Request, res: Response, next: NextFunction) => {
+      if (err.name === 'UnauthorizedError') {
+        return res.status(401).json({ error: { message: 'Invalid token' } });
+      }
+      next(err);
       },
     };
+
+    return middleware;
   });
   
   describe('Health Check', () => {

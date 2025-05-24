@@ -37,8 +37,14 @@ interface SearchRestaurant {
   imageUrl: string;
 }
 
+interface SearchResult<T> {
+  hits: T[];
+  total: number;
+  aggregations?: any;
+}
+
 // Inicializar ElasticSearch
-export const initializeElasticsearch = async () => {
+export const initializeElasticsearch = async (): Promise<Client> => {
   try {
     logger.info('Initializing ElasticSearch client...');
     
@@ -46,9 +52,18 @@ export const initializeElasticsearch = async () => {
       node: config.ELASTICSEARCH_URI,
       requestTimeout: 30000,
       pingTimeout: 3000,
+      maxRetries: 3,
+      auth: config.ELASTICSEARCH_USERNAME && config.ELASTICSEARCH_PASSWORD ? {
+        username: config.ELASTICSEARCH_USERNAME,
+        password: config.ELASTICSEARCH_PASSWORD
+      } : undefined
     });
     
     // Verificar conexión
+    await client.ping();
+    logger.info('ElasticSearch connection successful');
+    
+    // Obtener información del cluster
     const health = await client.cluster.health();
     logger.info(`ElasticSearch cluster status: ${health.status}`);
     
@@ -58,12 +73,12 @@ export const initializeElasticsearch = async () => {
     return client;
   } catch (error) {
     logger.error('Failed to initialize ElasticSearch:', error);
-    throw error;
+    throw new Error(`ElasticSearch initialization failed: ${error.message}`);
   }
 };
 
 // Crear índices si no existen
-const createIndicesIfNotExist = async () => {
+const createIndicesIfNotExist = async (): Promise<void> => {
   try {
     // Índice de productos
     const productIndexExists = await client.indices.exists({ index: PRODUCT_INDEX });
@@ -88,6 +103,15 @@ const createIndicesIfNotExist = async () => {
                     'spanish_stop',
                     'spanish_stemmer'
                   ]
+                },
+                autocomplete_analyzer: {
+                  type: 'custom',
+                  tokenizer: 'standard',
+                  filter: [
+                    'lowercase',
+                    'asciifolding',
+                    'autocomplete_filter'
+                  ]
                 }
               },
               filter: {
@@ -98,6 +122,11 @@ const createIndicesIfNotExist = async () => {
                 spanish_stemmer: {
                   type: 'stemmer',
                   language: 'light_spanish'
+                },
+                autocomplete_filter: {
+                  type: 'edge_ngram',
+                  min_gram: 2,
+                  max_gram: 20
                 }
               }
             }
@@ -111,9 +140,10 @@ const createIndicesIfNotExist = async () => {
                 analyzer: 'spanish_analyzer',
                 fields: {
                   keyword: { type: 'keyword' },
-                  suggest: {
-                    type: 'completion',
-                    analyzer: 'spanish_analyzer'
+                  autocomplete: {
+                    type: 'text',
+                    analyzer: 'autocomplete_analyzer',
+                    search_analyzer: 'spanish_analyzer'
                   }
                 }
               },
@@ -134,7 +164,13 @@ const createIndicesIfNotExist = async () => {
               restaurant: {
                 type: 'object',
                 properties: {
-                  name: { type: 'text', analyzer: 'spanish_analyzer' },
+                  name: { 
+                    type: 'text', 
+                    analyzer: 'spanish_analyzer',
+                    fields: {
+                      keyword: { type: 'keyword' }
+                    }
+                  },
                   cuisine: { type: 'keyword' }
                 }
               },
@@ -145,7 +181,9 @@ const createIndicesIfNotExist = async () => {
         }
       });
       
-      logger.info(`${PRODUCT_INDEX} index created`);
+      logger.info(`${PRODUCT_INDEX} index created successfully`);
+    } else {
+      logger.info(`${PRODUCT_INDEX} index already exists`);
     }
 
     // Índice de restaurantes
@@ -166,12 +204,22 @@ const createIndicesIfNotExist = async () => {
                   type: 'custom',
                   tokenizer: 'standard',
                   filter: ['lowercase', 'asciifolding', 'spanish_stop']
+                },
+                autocomplete_analyzer: {
+                  type: 'custom',
+                  tokenizer: 'standard',
+                  filter: ['lowercase', 'asciifolding', 'autocomplete_filter']
                 }
               },
               filter: {
                 spanish_stop: {
                   type: 'stop',
                   stopwords: '_spanish_'
+                },
+                autocomplete_filter: {
+                  type: 'edge_ngram',
+                  min_gram: 2,
+                  max_gram: 20
                 }
               }
             }
@@ -184,36 +232,57 @@ const createIndicesIfNotExist = async () => {
                 analyzer: 'spanish_analyzer',
                 fields: {
                   keyword: { type: 'keyword' },
-                  suggest: {
-                    type: 'completion',
-                    analyzer: 'spanish_analyzer'
+                  autocomplete: {
+                    type: 'text',
+                    analyzer: 'autocomplete_analyzer',
+                    search_analyzer: 'spanish_analyzer'
                   }
                 }
               },
               description: { type: 'text', analyzer: 'spanish_analyzer' },
-              address: { type: 'text' },
+              address: { 
+                type: 'text',
+                fields: {
+                  keyword: { type: 'keyword' }
+                }
+              },
               cuisine: { type: 'keyword' },
               rating: { type: 'float' },
               priceRange: { type: 'integer' },
               imageUrl: { type: 'keyword', index: false },
-              location: { type: 'geo_point' }
+              location: { type: 'geo_point' },
+              openingHours: {
+                type: 'object',
+                properties: {
+                  opens: { type: 'keyword' },
+                  closes: { type: 'keyword' }
+                }
+              },
+              created_at: { type: 'date' },
+              updated_at: { type: 'date' }
             }
           }
         }
       });
       
-      logger.info(`${RESTAURANT_INDEX} index created`);
+      logger.info(`${RESTAURANT_INDEX} index created successfully`);
+    } else {
+      logger.info(`${RESTAURANT_INDEX} index already exists`);
     }
   } catch (error) {
     logger.error('Error creating indices:', error);
-    throw error;
+    throw new Error(`Failed to create indices: ${error.message}`);
   }
 };
 
 // Indexar un producto
-export const indexProduct = async (product: SearchProduct) => {
+export const indexProduct = async (product: SearchProduct): Promise<boolean> => {
   try {
-    await client.index({
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
+    }
+
+    const response = await client.index({
       index: PRODUCT_INDEX,
       id: product.id,
       body: {
@@ -223,46 +292,22 @@ export const indexProduct = async (product: SearchProduct) => {
       }
     });
     
-    logger.debug(`Indexed product ${product.id}`);
-    return true;
+    logger.debug(`Indexed product ${product.id}, result: ${response.result}`);
+    return response.result === 'created' || response.result === 'updated';
   } catch (error) {
     logger.error(`Error indexing product ${product.id}:`, error);
-    throw error;
-  }
-};
-
-export const searchProductsByCategory = async (category: string) => {
-  try {
-    const result = await client.search({
-      index: PRODUCT_INDEX,
-      body: {
-        query: {
-          term: {
-            category: category
-          }
-        }
-      }
-    });
-
-    return {
-      hits: result.hits.hits.map((hit: any) => ({
-        ...hit._source,
-        score: hit._score
-      })),
-      total: typeof result.hits.total === 'object' 
-        ? result.hits.total.value 
-        : result.hits.total
-    };
-  } catch (error) {
-    logger.error(`Error searching products by category "${category}":`, error);
-    throw error;
+    throw new Error(`Failed to index product: ${error.message}`);
   }
 };
 
 // Indexar un restaurante
-export const indexRestaurant = async (restaurant: SearchRestaurant) => {
+export const indexRestaurant = async (restaurant: SearchRestaurant): Promise<boolean> => {
   try {
-    await client.index({
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
+    }
+
+    const response = await client.index({
       index: RESTAURANT_INDEX,
       id: restaurant.id,
       body: {
@@ -271,11 +316,11 @@ export const indexRestaurant = async (restaurant: SearchRestaurant) => {
       }
     });
     
-    logger.debug(`Indexed restaurant ${restaurant.id}`);
-    return true;
+    logger.debug(`Indexed restaurant ${restaurant.id}, result: ${response.result}`);
+    return response.result === 'created' || response.result === 'updated';
   } catch (error) {
     logger.error(`Error indexing restaurant ${restaurant.id}:`, error);
-    throw error;
+    throw new Error(`Failed to index restaurant: ${error.message}`);
   }
 };
 
@@ -293,8 +338,12 @@ export const searchProducts = async (
     from?: number;
     size?: number;
   }
-) => {
+): Promise<SearchResult<SearchProduct & { score: number; highlights?: any }>> => {
   try {
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
+    }
+
     const mustClauses: any[] = [];
     const filterClauses: any[] = [];
 
@@ -305,12 +354,14 @@ export const searchProducts = async (
           query: query.trim(),
           fields: [
             'name^3',
+            'name.autocomplete^2',
             'description^1',
             'category.text^2',
             'restaurant.name^2'
           ],
           fuzziness: 'AUTO',
-          minimum_should_match: '75%'
+          minimum_should_match: '75%',
+          type: 'best_fields'
         }
       });
     } else {
@@ -346,8 +397,14 @@ export const searchProducts = async (
       },
       highlight: {
         fields: {
-          name: {},
-          description: {}
+          name: {
+            pre_tags: ['<em>'],
+            post_tags: ['</em>']
+          },
+          description: {
+            pre_tags: ['<em>'],
+            post_tags: ['</em>']
+          }
         }
       },
       sort: [
@@ -356,7 +413,7 @@ export const searchProducts = async (
         { price: { order: 'asc' } }
       ],
       from: pagination?.from || 0,
-      size: pagination?.size || 20
+      size: Math.min(pagination?.size || 20, 100) // Máximo 100 resultados
     };
 
     const result = await client.search({
@@ -364,20 +421,24 @@ export const searchProducts = async (
       body: searchBody
     });
 
+    const hits = result.hits.hits.map((hit: any) => ({
+      ...hit._source,
+      score: hit._score,
+      highlights: hit.highlight
+    }));
+
+    const total = typeof result.hits.total === 'object' 
+      ? result.hits.total.value 
+      : result.hits.total;
+
     return {
-      hits: result.hits.hits.map((hit: any) => ({
-        ...hit._source,
-        score: hit._score,
-        highlights: hit.highlight
-      })),
-      total: typeof result.hits.total === 'object' 
-        ? result.hits.total.value 
-        : result.hits.total,
+      hits,
+      total: total || 0,
       aggregations: result.aggregations
     };
   } catch (error) {
     logger.error(`Error searching products with query "${query}":`, error);
-    throw error;
+    throw new Error(`Product search failed: ${error.message}`);
   }
 };
 
@@ -393,8 +454,12 @@ export const searchRestaurants = async (
     from?: number;
     size?: number;
   }
-) => {
+): Promise<SearchResult<SearchRestaurant & { score: number }>> => {
   try {
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
+    }
+
     const mustClauses: any[] = [];
     const filterClauses: any[] = [];
 
@@ -403,8 +468,15 @@ export const searchRestaurants = async (
       mustClauses.push({
         multi_match: {
           query: query.trim(),
-          fields: ['name^3', 'description^1', 'cuisine^2'],
-          fuzziness: 'AUTO'
+          fields: [
+            'name^3', 
+            'name.autocomplete^2',
+            'description^1', 
+            'cuisine^2',
+            'address^1'
+          ],
+          fuzziness: 'AUTO',
+          type: 'best_fields'
         }
       });
     } else {
@@ -438,74 +510,111 @@ export const searchRestaurants = async (
           { rating: { order: 'desc' } }
         ],
         from: pagination?.from || 0,
-        size: pagination?.size || 20
+        size: Math.min(pagination?.size || 20, 100)
       }
     });
 
+    const hits = result.hits.hits.map((hit: any) => ({
+      ...hit._source,
+      score: hit._score
+    }));
+
+    const total = typeof result.hits.total === 'object' 
+      ? result.hits.total.value 
+      : result.hits.total;
+
     return {
-      hits: result.hits.hits.map((hit: any) => ({
-        ...hit._source,
-        score: hit._score
-      })),
-      total: typeof result.hits.total === 'object' 
-        ? result.hits.total.value 
-        : result.hits.total
+      hits,
+      total: total || 0
     };
   } catch (error) {
     logger.error(`Error searching restaurants with query "${query}":`, error);
-    throw error;
+    throw new Error(`Restaurant search failed: ${error.message}`);
   }
 };
 
 // Obtener sugerencias de autocompletado
-export const getSuggestions = async (query: string, type: 'products' | 'restaurants' = 'products') => {
+export const getSuggestions = async (
+  query: string, 
+  type: 'products' | 'restaurants' = 'products'
+): Promise<Array<{ text: string; score: number; source: any }>> => {
   try {
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
+    }
+
     const index = type === 'products' ? PRODUCT_INDEX : RESTAURANT_INDEX;
-    const field = type === 'products' ? 'name.suggest' : 'name.suggest';
+    const field = type === 'products' ? 'name.autocomplete' : 'name.autocomplete';
 
     const result = await client.search({
       index,
       body: {
-        suggest: {
-          autocomplete: {
-            prefix: query,
-            completion: {
-              field,
-              size: 10
+        query: {
+          match: {
+            [field]: {
+              query: query,
+              operator: 'and'
             }
           }
-        }
+        },
+        _source: ['id', 'name', 'category', 'cuisine'],
+        size: 10
       }
     });
 
-    return result.suggest?.autocomplete?.[0]?.options?.map((option: any) => ({
-      text: option.text,
-      score: option._score,
-      source: option._source
-    })) || [];
+    return result.hits.hits.map((hit: any) => ({
+      text: hit._source.name,
+      score: hit._score,
+      source: hit._source
+    }));
   } catch (error) {
     logger.error(`Error getting suggestions for query "${query}":`, error);
-    throw error;
+    return [];
   }
 };
 
 // Reindexar todos los datos
-export const reindexAllData = async () => {
+export const reindexAllData = async (): Promise<{ success: boolean; restaurants: number; products: number }> => {
   try {
-    logger.info('Starting full reindexing...');
-    
-    // Obtener datos de la API principal
-    const [productsResponse, restaurantsResponse] = await Promise.all([
-      fetch(`${config.API_URI}/api/menu-items`),
-      fetch(`${config.API_URI}/api/restaurants`)
-    ]);
-
-    if (!productsResponse.ok || !restaurantsResponse.ok) {
-      throw new Error('Failed to fetch data from API');
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
     }
 
-    const products = await productsResponse.json();
-    const restaurants = await restaurantsResponse.json();
+    logger.info('Starting full reindexing...');
+    
+    // Obtener datos de la API principal con manejo de errores mejorado
+    let products: any[] = [];
+    let restaurants: any[] = [];
+
+    try {
+      const fetch = (await import('node-fetch')).default;
+      
+      const [productsResponse, restaurantsResponse] = await Promise.allSettled([
+        fetch(`${config.API_URI}/api/menu-items`),
+        fetch(`${config.API_URI}/api/restaurants`)
+      ]);
+
+      if (productsResponse.status === 'fulfilled' && productsResponse.value.ok) {
+        products = await productsResponse.value.json();
+        if (Array.isArray(products.results)) {
+          products = products.results;
+        }
+      } else {
+        logger.warn('Failed to fetch products for reindexing');
+      }
+
+      if (restaurantsResponse.status === 'fulfilled' && restaurantsResponse.value.ok) {
+        restaurants = await restaurantsResponse.value.json();
+        if (Array.isArray(restaurants.results)) {
+          restaurants = restaurants.results;
+        }
+      } else {
+        logger.warn('Failed to fetch restaurants for reindexing');
+      }
+    } catch (fetchError) {
+      logger.error('Error fetching data from API:', fetchError);
+      throw new Error('Failed to fetch data from API for reindexing');
+    }
 
     // Recrear índices
     await recreateIndices();
@@ -520,7 +629,19 @@ export const reindexAllData = async () => {
         }
       ]);
 
-      await client.bulk({ refresh: true, body: restaurantOps });
+      const bulkResponse = await client.bulk({ 
+        refresh: true, 
+        body: restaurantOps,
+        timeout: '60s'
+      });
+      
+      if (bulkResponse.errors) {
+        const errors = bulkResponse.items.filter((item: any) => 
+          item.index && item.index.error
+        );
+        logger.warn(`Restaurant bulk indexing had ${errors.length} errors`);
+      }
+
       logger.info(`Indexed ${restaurants.length} restaurants`);
     }
 
@@ -543,18 +664,23 @@ export const reindexAllData = async () => {
         ];
       });
 
-      const bulkResponse = await client.bulk({ refresh: true, body: productOps });
+      const bulkResponse = await client.bulk({ 
+        refresh: true, 
+        body: productOps,
+        timeout: '60s'
+      });
       
       if (bulkResponse.errors) {
-        const erroredDocs = bulkResponse.items.filter((item: any) => 
+        const errors = bulkResponse.items.filter((item: any) => 
           item.index && item.index.error
         );
-        logger.warn(`Bulk indexing had ${erroredDocs.length} errors`);
+        logger.warn(`Product bulk indexing had ${errors.length} errors`);
       }
 
       logger.info(`Indexed ${products.length} products`);
     }
 
+    logger.info('Full reindexing completed successfully');
     return {
       success: true,
       restaurants: restaurants.length,
@@ -562,19 +688,23 @@ export const reindexAllData = async () => {
     };
   } catch (error) {
     logger.error('Error during full reindexing:', error);
-    throw error;
+    throw new Error(`Reindexing failed: ${error.message}`);
   }
 };
 
 // Recrear índices (eliminar y crear de nuevo)
-const recreateIndices = async () => {
+const recreateIndices = async (): Promise<void> => {
   const indices = [PRODUCT_INDEX, RESTAURANT_INDEX];
   
   for (const index of indices) {
-    const exists = await client.indices.exists({ index });
-    if (exists) {
-      await client.indices.delete({ index });
-      logger.info(`Deleted existing index: ${index}`);
+    try {
+      const exists = await client.indices.exists({ index });
+      if (exists) {
+        await client.indices.delete({ index });
+        logger.info(`Deleted existing index: ${index}`);
+      }
+    } catch (error) {
+      logger.warn(`Error deleting index ${index}:`, error);
     }
   }
   
@@ -582,8 +712,12 @@ const recreateIndices = async () => {
 };
 
 // Eliminar producto del índice
-export const deleteProduct = async (productId: string) => {
+export const deleteProduct = async (productId: string): Promise<void> => {
   try {
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
+    }
+
     await client.delete({
       index: PRODUCT_INDEX,
       id: productId
@@ -592,14 +726,19 @@ export const deleteProduct = async (productId: string) => {
   } catch (error) {
     if (error.meta?.statusCode !== 404) {
       logger.error(`Error deleting product ${productId}:`, error);
-      throw error;
+      throw new Error(`Failed to delete product: ${error.message}`);
     }
+    // Ignorar error 404 (producto no encontrado)
   }
 };
 
 // Eliminar restaurante del índice
-export const deleteRestaurant = async (restaurantId: string) => {
+export const deleteRestaurant = async (restaurantId: string): Promise<void> => {
   try {
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
+    }
+
     await client.delete({
       index: RESTAURANT_INDEX,
       id: restaurantId
@@ -608,10 +747,67 @@ export const deleteRestaurant = async (restaurantId: string) => {
   } catch (error) {
     if (error.meta?.statusCode !== 404) {
       logger.error(`Error deleting restaurant ${restaurantId}:`, error);
-      throw error;
+      throw new Error(`Failed to delete restaurant: ${error.message}`);
     }
+    // Ignorar error 404 (restaurante no encontrado)
   }
 };
 
-// Obtener cliente (para testing)
-export const getElasticsearchClient = () => client;
+// Verificar salud de ElasticSearch
+export const checkHealth = async (): Promise<{
+  status: string;
+  cluster_name: string;
+  number_of_nodes: number;
+  indices: { [key: string]: any };
+}> => {
+  try {
+    if (!client) {
+      throw new Error('ElasticSearch client not initialized');
+    }
+
+    const [health, productStats, restaurantStats] = await Promise.all([
+      client.cluster.health(),
+      client.indices.stats({ index: PRODUCT_INDEX }).catch(() => null),
+      client.indices.stats({ index: RESTAURANT_INDEX }).catch(() => null)
+    ]);
+
+    return {
+      status: health.status,
+      cluster_name: health.cluster_name,
+      number_of_nodes: health.number_of_nodes,
+      indices: {
+        [PRODUCT_INDEX]: productStats ? {
+          docs: productStats.indices[PRODUCT_INDEX]?.total?.docs || { count: 0 },
+          size: productStats.indices[PRODUCT_INDEX]?.total?.store || { size_in_bytes: 0 }
+        } : null,
+        [RESTAURANT_INDEX]: restaurantStats ? {
+          docs: restaurantStats.indices[RESTAURANT_INDEX]?.total?.docs || { count: 0 },
+          size: restaurantStats.indices[RESTAURANT_INDEX]?.total?.store || { size_in_bytes: 0 }
+        } : null
+      }
+    };
+  } catch (error) {
+    logger.error('Error checking ElasticSearch health:', error);
+    throw new Error(`Health check failed: ${error.message}`);
+  }
+};
+
+// Obtener cliente (para testing y uso externo)
+export const getElasticsearchClient = (): Client => {
+  if (!client) {
+    throw new Error('ElasticSearch client not initialized');
+  }
+  return client;
+};
+
+// Cerrar conexión
+export const closeConnection = async (): Promise<void> => {
+  if (client) {
+    try {
+      await client.close();
+      logger.info('ElasticSearch connection closed');
+    } catch (error) {
+      logger.error('Error closing ElasticSearch connection:', error);
+    }
+  }
+};

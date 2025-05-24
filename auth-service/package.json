@@ -13,7 +13,13 @@
     "test:integration": "vitest run --dir src/tests/integration",
     "test": "vitest run"
   },
-  "keywords": ["auth", "jwt", "auth0", "authentication", "authorization"],
+  "keywords": [
+    "auth",
+    "jwt",
+    "auth0",
+    "authentication",
+    "authorization"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -21,7 +27,9 @@
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
+    "express-async-handler": "^1.2.0",
     "express-jwt": "^8.4.1",
+    "express-rate-limit": "^7.5.0",
     "helmet": "^7.0.0",
     "jsonwebtoken": "^9.0.0",
     "jwks-rsa": "^3.0.1",
