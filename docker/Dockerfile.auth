@@ -30,9 +30,8 @@ FROM base AS build
 # Copiar dependencias de desarrollo
 RUN npm ci
 
-# Copiar código fuente
+# Copiar código fuente - SOLO src/
 COPY auth-service/src ./src
-COPY auth-service/index.ts ./
 
 # Compilar TypeScript
 RUN npm run build

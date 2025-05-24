@@ -277,7 +277,7 @@ export const securityEventLogger = (eventType: string) => {
 // Middleware para verificar IP bloqueadas
 export const checkBlockedIPs = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const clientIP = req.ip;
+    const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
     
     if (await securityService.isIPBlocked(clientIP)) {
       logger.warn(`Blocked request from IP: ${clientIP}`);

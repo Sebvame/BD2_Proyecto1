@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
-import app from '../../../index';
+import app from '../../index';
 import { initializeElasticsearch, getElasticsearchClient, reindexAllProducts } from '../../services/elasticsearch';
 import { initializeRedis, clearCache, closeRedis } from '../../services/cache';
 

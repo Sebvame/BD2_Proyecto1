@@ -30,9 +30,8 @@ FROM base AS build
 # Copiar dependencias
 COPY --from=deps /app/node_modules ./node_modules
 
-# Copiar código fuente
+# Copiar código fuente - SOLO src/
 COPY search-service/src ./src
-COPY search-service/index.ts ./
 
 # Compilar TypeScript
 RUN npm run build
