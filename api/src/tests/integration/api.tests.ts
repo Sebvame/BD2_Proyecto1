@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import mongoose from 'mongoose';
-import app from '../index';
+import app from '../../index'; // Asegúrate de que la ruta sea correcta
 import { config } from '../../config';
 import { connectToMongoDB, closeConnections } from '../../utils/db';
 import { UserModel } from '../../repositories/mongodb/schemas';
@@ -43,7 +43,7 @@ describe('API Integration Tests', () => {
   // En un entorno real, estos serían verificados con Auth0
   vi.mock('../../middleware/auth', () => {
     return {
-      checkJwt: (req, res, next) => {
+      checkJwt: (req?, res, next) => {
         const authHeader = req.headers.authorization;
         if (authHeader && authHeader.startsWith('Bearer ')) {
           const token = authHeader.split(' ')[1];

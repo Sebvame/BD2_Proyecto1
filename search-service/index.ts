@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import { config } from './config';
+import { config } from './src/config';
 import { logger } from './src/utils/logger';
 import { initializeElasticsearch } from './src/services/elasticsearch';
 
